@@ -17,19 +17,20 @@ import (
 
 var (
 	// Source of images links and directory of desctination.
-	srcurl, dstdir string
+	srcurl, dstdir, tagLink string
 )
 
 func init() {
 	// init app flag.
 	flag.StringVar(&srcurl, "src", "", "this is http address source of images")
 	flag.StringVar(&dstdir, "to", "", "this is directory of download destionation")
+	flag.StringVar(&tagLink, "tag", "", "this is the tag in which the image link is defined")
 }
 
 func main() {
 	timeline := time.Now()
 	flag.Parse()
-	if srcurl == "" || dstdir == "" {
+	if srcurl == "" || dstdir == "" || tagLink == "" {
 		flag.PrintDefaults()
 		os.Exit(2)
 	}
@@ -41,7 +42,7 @@ func main() {
 	}
 	// searching of images links in source
 	srcReader := bytes.NewReader(source)
-	imgLinks, err := findImgLinks(srcReader)
+	imgLinks, err := findImgLinks(srcReader, tagLink)
 	if len(imgLinks) == 0 {
 		fmt.Printf("Imgrabber cannot found images in %s", srcurl)
 		os.Exit(0)
@@ -62,13 +63,12 @@ func main() {
 		fmt.Printf("Error of download images from %s: %v\r\n", srcurl, err)
 		os.Exit(2)
 	}
+	resultCh := make(chan string)
 	for _, imgLink := range imgLinks {
-		err := download(imgLink, dstdir)
-		if err != nil {
-			fmt.Printf("Error of download images from %s: %v\r\n", srcurl, err)
-			os.Exit(2)
-		}
-		break
+		go download(imgLink, dstdir, resultCh)
+	}
+	for _, _ = range imgLinks {
+		fmt.Println(<-resultCh)
 	}
 	fmt.Printf("download all files by %.2fs", time.Since(timeline).Seconds())
 	os.Exit(0)
@@ -106,19 +106,25 @@ func request(url string) ([]byte, error) {
 }
 
 // findImgLinks parses the source, and searches in it for links to images.
-func findImgLinks(srcReader io.Reader) ([]string, error) {
+func findImgLinks(srcReader io.Reader, tagLink string) ([]string, error) {
 	var imgLinks []string
 	var walker func(links []string, n *html.Node) []string
 	doc, err := html.Parse(srcReader)
 	if err != nil {
 		return nil, fmt.Errorf("error of parse sourse: %v", err)
 	}
-	// TODO: walker cannot parses iframe.
+	//TODO:
+	/*
+		1. walker cannot parses iframe.
+		2. walker not safe use tagLine param.
+	*/
 	walker = func(links []string, n *html.Node) []string {
-		if n.Type == html.ElementNode && n.Data == "img" {
+		if n.Type == html.ElementNode && n.Data == tagLink {
 			for _, a := range n.Attr {
-				if a.Key == "src" {
-					links = append(links, a.Val)
+				if a.Key == "href" || a.Key == "src" {
+					if isCorrectExtension(a.Val, ".jpg", ".png", ".bmp") {
+						links = append(links, a.Val)
+					}
 				}
 			}
 		}
@@ -131,17 +137,27 @@ func findImgLinks(srcReader io.Reader) ([]string, error) {
 	return imgLinks, nil
 }
 
+func isCorrectExtension(url string, extensions ...string) bool {
+	for _, ext := range extensions {
+		if strings.HasSuffix(url, ext) {
+			return true
+		}
+	}
+	return false
+}
+
 // download loads the remote file to the specified directory.
-func download(url string, dirpath string) error {
-	fmt.Println("download", url)
+func download(url string, dirpath string, resultCh chan<- string) {
 	imgContent, err := request(url)
 	if err != nil {
-		return fmt.Errorf("error of download images: %v", err)
+		resultCh <- fmt.Sprintf("error of download images: %v", err)
+		return
 	}
 	splitURL := strings.Split(url, "/")
 	fileName := fmt.Sprintf("%s/%s", dirpath, splitURL[len(splitURL)-1])
 	err = ioutil.WriteFile(fileName, imgContent, os.ModePerm)
-	return nil
+	resultCh <- fmt.Sprintf("downloaded %s", url)
+	return
 }
 
 // makeDestinationDir creates a directory to load.
